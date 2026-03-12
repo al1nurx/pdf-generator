@@ -19,6 +19,28 @@ Font.register({
   ],
 });
 
+export interface DocMeta {
+  approvalLabel: string;
+  approvalPosition: string;
+  approvalOrg: string;
+  approvalName: string;
+  approvalDate: string;
+  docTitle: string;
+  docSubtitle1: string;
+  docSubtitle2: string;
+  cityText: string;
+  infoDevLabel: string;
+  infoDevValue: string;
+  infoApproveLabel: string;
+  infoApproveValue: string;
+  infoDevelopersLabel: string;
+  infoDevelopersValue: string;
+  infoCheckLabel: string;
+  infoCheckValue: string;
+  footerCopy: string;
+  footerLegal: string;
+}
+
 const RED_BAR_WIDTH = 20;
 const PAGE_PADDING_H = 40;
 const PAGE_PADDING_TOP = 30;
@@ -28,11 +50,9 @@ const LOGO_MARGIN_BOTTOM = 20;
 const CONTENT_TOP_OFFSET = PAGE_PADDING_TOP + LOGO_HEIGHT + LOGO_MARGIN_BOTTOM;
 
 const TABLE_WIDTH = 495;
-const TABLE_ROW_MIN_HEIGHT = 20;
-
-const FOOTER_COPY = "Запрещается несанкционированное копирование документа";
-const FOOTER_LEGAL =
-  "Настоящая должностная инструкция не может быть полностью или частично воспроизведена,\nтиражирована и распространена без разрешения Председателя Правления АО «Университет\nКАЗГЮУ имени М.С. Нарикбаева».";
+const TABLE_ROW_MIN_HEIGHT = 22;
+const BORDER_WIDTH = 1;
+const BORDER_COLOR = "#111111";
 
 const BASE_TEXT = {
   fontFamily: "Calibri" as const,
@@ -41,6 +61,575 @@ const BASE_TEXT = {
   lineHeight: 1.4,
   color: "#111111",
 };
+
+const RedBar = () => <View style={styles.redBar} fixed />;
+const Logo = () => (
+  <View style={styles.logo} fixed>
+    <Image src="/logo.png" />
+  </View>
+);
+
+const FooterPage1 = ({ meta }: { meta: DocMeta }) => (
+  <Text style={styles.footerCopyOnly}>{meta.footerCopy}</Text>
+);
+
+const FooterPages = ({ meta }: { meta: DocMeta }) => (
+  <>
+    <Text style={styles.footerLegal} fixed>
+      {meta.footerLegal}
+    </Text>
+    <Text style={styles.footerCopyBelow} fixed>
+      {meta.footerCopy}
+    </Text>
+  </>
+);
+
+function getInlineStyles(node: Element): Style {
+  const style: Record<string, unknown> = {};
+  const attr = node.attribs?.style ?? "";
+  attr.split(";").forEach((rule) => {
+    const i = rule.indexOf(":");
+    if (i === -1) return;
+    const prop = rule.slice(0, i).trim();
+    const val = rule.slice(i + 1).trim();
+    if (!val) return;
+    if (prop === "color") style.color = val;
+    if (prop === "text-align") style.textAlign = val;
+  });
+  return style as Style;
+}
+
+function renderInlineChildren(nodes: DOMNode[]): React.ReactNode[] {
+  return nodes.map((node, i) => {
+    if (node.type === "text")
+      return <React.Fragment key={i}>{(node as TextNode).data}</React.Fragment>;
+    if (node instanceof Element) {
+      const s = getInlineStyles(node);
+      const ch = renderInlineChildren(node.children as DOMNode[]);
+      if (node.name === "strong" || node.name === "b")
+        return (
+          <Text key={i} style={[styles.bold, s]}>
+            {ch}
+          </Text>
+        );
+      if (node.name === "em" || node.name === "i")
+        return (
+          <Text key={i} style={[styles.italic, s]}>
+            {ch}
+          </Text>
+        );
+      if (node.name === "u")
+        return (
+          <Text key={i} style={[styles.underline, s]}>
+            {ch}
+          </Text>
+        );
+      if (node.name === "s" || node.name === "del")
+        return (
+          <Text key={i} style={[styles.strike, s]}>
+            {ch}
+          </Text>
+        );
+      if (node.name === "span")
+        return (
+          <Text key={i} style={s}>
+            {ch}
+          </Text>
+        );
+      return <React.Fragment key={i}>{ch}</React.Fragment>;
+    }
+    return null;
+  });
+}
+
+function parsePx(val?: string): number | undefined {
+  if (!val) return undefined;
+  const n = Number.parseFloat(val);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+interface CellData {
+  cell: Element;
+  colStart: number;
+  rowStart: number;
+  colspan: number;
+  rowspan: number;
+  isHeader: boolean;
+  vertical: boolean;
+  colWidthHint?: number;
+}
+
+function buildCellGrid(tableNode: Element): {
+  cells: CellData[];
+  rowCount: number;
+  colCount: number;
+} {
+  const allRows: Element[] = [];
+  function collectRows(n: Element) {
+    for (const child of n.children as DOMNode[]) {
+      if (!(child instanceof Element)) continue;
+      if (child.name === "tr") allRows.push(child);
+      else if (["tbody", "thead", "tfoot"].includes(child.name))
+        collectRows(child);
+    }
+  }
+  collectRows(tableNode);
+
+  const occupied: boolean[][] = [];
+  const ensureGrid = (r: number, c: number) => {
+    while (occupied.length <= r) occupied.push([]);
+    while (occupied[r].length <= c) occupied[r].push(false);
+  };
+
+  const cells: CellData[] = [];
+  let maxCol = 0;
+
+  allRows.forEach((row, ri) => {
+    const domCells = (row.children as DOMNode[]).filter(
+      (c) => c instanceof Element && ["td", "th"].includes((c as Element).name),
+    ) as Element[];
+
+    let ci = 0;
+    domCells.forEach((cell) => {
+      ensureGrid(ri, ci);
+      while (occupied[ri][ci]) {
+        ci++;
+        ensureGrid(ri, ci);
+      }
+
+      const colspan = Math.max(
+        1,
+        parseInt(cell.attribs?.colspan ?? "1", 10) || 1,
+      );
+      const rowspan = Math.max(
+        1,
+        parseInt(cell.attribs?.rowspan ?? "1", 10) || 1,
+      );
+      const vertical = cell.attribs?.["data-vertical"] === "true";
+      const colWidthHint = parsePx(cell.attribs?.["data-colwidth"]);
+      const isHeader = cell.name === "th";
+
+      for (let r = ri; r < ri + rowspan; r++) {
+        for (let c = ci; c < ci + colspan; c++) {
+          ensureGrid(r, c);
+          occupied[r][c] = true;
+        }
+      }
+
+      cells.push({
+        cell,
+        colStart: ci,
+        rowStart: ri,
+        colspan,
+        rowspan,
+        isHeader,
+        vertical,
+        colWidthHint,
+      });
+      maxCol = Math.max(maxCol, ci + colspan);
+      ci += colspan;
+    });
+  });
+
+  return { cells, rowCount: allRows.length, colCount: maxCol };
+}
+
+function renderTable(tableNode: Element, index: number): React.ReactNode {
+  const { cells, rowCount, colCount } = buildCellGrid(tableNode);
+  if (colCount === 0 || rowCount === 0) return null;
+
+  const columnWidths: Array<number | undefined> = new Array(colCount).fill(
+    undefined,
+  );
+  cells.forEach((c) => {
+    if (c.colspan === 1 && c.colWidthHint !== undefined) {
+      columnWidths[c.colStart] = c.colWidthHint;
+    }
+  });
+  const specifiedTotal = (
+    columnWidths.filter((w) => typeof w === "number") as number[]
+  ).reduce((a, b) => a + b, 0);
+  const unspecifiedCount = columnWidths.filter((w) => w === undefined).length;
+  const remaining = Math.max(0, TABLE_WIDTH - specifiedTotal);
+  const fallback =
+    unspecifiedCount > 0
+      ? remaining / unspecifiedCount
+      : TABLE_WIDTH / colCount;
+  const colWidthAt = (i: number) => columnWidths[i] ?? fallback;
+
+  const colX: number[] = [];
+  let xAcc = 0;
+  for (let c = 0; c < colCount; c++) {
+    colX.push(xAcc);
+    xAcc += colWidthAt(c);
+  }
+
+  const rowHeights: number[] = new Array(rowCount).fill(TABLE_ROW_MIN_HEIGHT);
+  cells.forEach((c) => {
+    if (c.vertical && c.rowspan === 1) {
+      rowHeights[c.rowStart] = Math.max(rowHeights[c.rowStart], 110);
+    }
+  });
+
+  const rowY: number[] = [];
+  let yAcc = 0;
+  for (let r = 0; r < rowCount; r++) {
+    rowY.push(yAcc);
+    yAcc += rowHeights[r];
+  }
+  const totalHeight = yAcc;
+
+  const renderedCells = cells.map((item, idx) => {
+    const x = colX[item.colStart];
+    const y = rowY[item.rowStart];
+
+    let cellW = 0;
+    for (let k = 0; k < item.colspan; k++)
+      cellW += colWidthAt(item.colStart + k);
+
+    let cellH = 0;
+    for (let k = 0; k < item.rowspan; k++)
+      cellH += rowHeights[item.rowStart + k];
+
+    const children = renderInlineChildren(item.cell.children as DOMNode[]);
+    const hasContent = (item.cell.children as DOMNode[]).some(
+      (c) =>
+        (c.type === "text" && (c as TextNode).data.trim()) ||
+        c instanceof Element,
+    );
+
+    const textStyle = item.isHeader
+      ? styles.tableCellTextHeader
+      : styles.tableCellText;
+
+    const baseStyle = {
+      position: "absolute" as const,
+      left: x,
+      top: y,
+      width: cellW,
+      height: cellH,
+      borderRightWidth: BORDER_WIDTH,
+      borderRightColor: BORDER_COLOR,
+      borderBottomWidth: BORDER_WIDTH,
+      borderBottomColor: BORDER_COLOR,
+      backgroundColor: item.isHeader ? "#f9f9f9" : "#ffffff",
+      overflow: "hidden" as const,
+    };
+
+    if (item.vertical) {
+      return (
+        <View key={idx} style={baseStyle}>
+          <View
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <View
+              style={{
+                transform: "rotate(-90deg)",
+                width: cellH - 10,
+                alignItems: "center",
+              }}
+            >
+              <Text
+                style={[textStyle, { textAlign: "center", flexWrap: "wrap" }]}
+              >
+                {hasContent ? children : " "}
+              </Text>
+            </View>
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <View
+        key={idx}
+        style={[baseStyle, { padding: 5, justifyContent: "flex-start" }]}
+      >
+        <Text style={textStyle}>{hasContent ? children : " "}</Text>
+      </View>
+    );
+  });
+
+  return (
+    <View
+      key={index}
+      style={{
+        width: TABLE_WIDTH,
+        height: totalHeight,
+        position: "relative",
+        marginBottom: 8,
+        marginTop: 4,
+        borderLeftWidth: BORDER_WIDTH,
+        borderLeftColor: BORDER_COLOR,
+        borderTopWidth: BORDER_WIDTH,
+        borderTopColor: BORDER_COLOR,
+      }}
+    >
+      {renderedCells}
+    </View>
+  );
+}
+
+function renderNode(node: DOMNode, index: number): React.ReactNode {
+  if (!(node instanceof Element)) {
+    if (node.type === "text") {
+      const data = (node as TextNode).data;
+      if (data?.trim())
+        return (
+          <Text key={index} style={styles.paragraph}>
+            {data}
+          </Text>
+        );
+    }
+    return null;
+  }
+
+  if (node.name === "div" && node.attribs?.class?.includes("page-break")) {
+    return <PageBreakMarker key={index} />;
+  }
+
+  const s = getInlineStyles(node);
+  const ch = renderInlineChildren(node.children as DOMNode[]);
+  const isIndented = node.attribs?.["data-indent"] === "true";
+  const indentStyle = isIndented ? styles.indentedParagraph : {};
+
+  if (node.name === "p")
+    return (
+      <Text key={index} style={[styles.paragraph, s, indentStyle]}>
+        {ch}
+      </Text>
+    );
+  if (node.name === "h1")
+    return (
+      <Text key={index} style={[styles.h1, s, indentStyle]}>
+        {ch}
+      </Text>
+    );
+  if (node.name === "h2")
+    return (
+      <Text key={index} style={[styles.h2, s, indentStyle]}>
+        {ch}
+      </Text>
+    );
+
+  if (node.name === "ul" && node.attribs?.["data-type"] !== "dash-list") {
+    return (
+      <View key={index}>
+        {(node.children as DOMNode[])
+          .filter((c) => c instanceof Element && (c as Element).name === "li")
+          .map((li, liIdx) => (
+            <View key={liIdx} style={styles.listItem}>
+              <Text style={styles.listBullet}>{"• "}</Text>
+              <Text style={styles.listItemText}>
+                {renderInlineChildren((li as Element).children as DOMNode[])}
+              </Text>
+            </View>
+          ))}
+      </View>
+    );
+  }
+
+  if (node.name === "ul" && node.attribs?.["data-type"] === "dash-list") {
+    return (
+      <View key={index}>
+        {(node.children as DOMNode[])
+          .filter(
+            (c) =>
+              c instanceof Element &&
+              (c as Element).name === "li" &&
+              (c as Element).attribs?.["data-type"] === "dash",
+          )
+          .map((li, liIdx) => (
+            <View key={liIdx} style={styles.dashItem}>
+              <Text style={styles.dashBullet}>{"— "}</Text>
+              <Text style={styles.dashItemText}>
+                {renderInlineChildren((li as Element).children as DOMNode[])}
+              </Text>
+            </View>
+          ))}
+      </View>
+    );
+  }
+
+  if (node.name === "ol") {
+    return (
+      <View key={index}>
+        {(node.children as DOMNode[])
+          .filter((c) => c instanceof Element && (c as Element).name === "li")
+          .map((li, liIdx) => (
+            <View key={liIdx} style={styles.listItem}>
+              <Text style={styles.listBullet}>{`${liIdx + 1}. `}</Text>
+              <Text style={styles.listItemText}>
+                {renderInlineChildren((li as Element).children as DOMNode[])}
+              </Text>
+            </View>
+          ))}
+      </View>
+    );
+  }
+
+  if (node.name === "table") return renderTable(node, index);
+  if (node.name === "br") return <Text key={index}>{"\n"}</Text>;
+  return null;
+}
+
+function parseHTMLToNodes(html: string): React.ReactNode[] {
+  const result: React.ReactNode[] = [];
+  let index = 0;
+  parse(html, {
+    replace: (node) => {
+      const rendered = renderNode(node, index++);
+      if (rendered) result.push(rendered);
+      return <></>;
+    },
+  });
+  return result;
+}
+
+function TitlePage({ meta }: { meta: DocMeta }) {
+  return (
+    <Page size="A4" style={styles.titlePage}>
+      <RedBar />
+      <Logo />
+      <View style={{ alignItems: "flex-end", marginBottom: 10 }}>
+        <Text style={styles.approvalBold}>{meta.approvalLabel}</Text>
+        <Text style={styles.approvalNormal}>{meta.approvalPosition}</Text>
+        <Text style={styles.approvalNormal}>{meta.approvalOrg}</Text>
+        <View
+          style={{
+            width: 160,
+            borderBottomWidth: 1,
+            borderBottomColor: "#111",
+            marginVertical: 6,
+          }}
+        />
+        <Text style={styles.approvalBold}>{meta.approvalName}</Text>
+        <Text style={styles.approvalNormal}>{meta.approvalDate}</Text>
+      </View>
+      <Text style={styles.docTitle}>{meta.docTitle}</Text>
+      <Text style={styles.docSubtitle}>{meta.docSubtitle1}</Text>
+      {meta.docSubtitle2 ? (
+        <Text style={styles.docSubtitle}>{meta.docSubtitle2}</Text>
+      ) : null}
+      <View style={{ marginTop: 80, alignItems: "flex-end" }}>
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            marginBottom: 16,
+          }}
+        >
+          <Text
+            style={{
+              fontFamily: "Calibri",
+              fontSize: 12,
+              fontWeight: "bold",
+              color: "#111",
+            }}
+          >
+            Экз. №
+          </Text>
+          <View
+            style={{
+              width: 100,
+              borderBottomWidth: 1,
+              borderBottomColor: "#111",
+              marginLeft: 4,
+            }}
+          />
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <Text
+            style={{
+              fontFamily: "Calibri",
+              fontSize: 12,
+              fontWeight: "bold",
+              color: "#111",
+            }}
+          >
+            Копия №
+          </Text>
+          <View
+            style={{
+              width: 80,
+              borderBottomWidth: 1,
+              borderBottomColor: "#111",
+              marginLeft: 4,
+            }}
+          />
+        </View>
+      </View>
+      <Text style={styles.cityText}>{meta.cityText}</Text>
+      <FooterPage1 meta={meta} />
+    </Page>
+  );
+}
+
+function InfoPage({ meta }: { meta: DocMeta }) {
+  const rows = [
+    { label: meta.infoDevLabel, value: meta.infoDevValue },
+    { label: meta.infoApproveLabel, value: meta.infoApproveValue },
+    { label: meta.infoDevelopersLabel, value: meta.infoDevelopersValue },
+    { label: meta.infoCheckLabel, value: meta.infoCheckValue },
+  ];
+  return (
+    <Page size="A4" style={styles.page}>
+      <RedBar />
+      <Logo />
+      {rows.map((row, i) => (
+        <Text key={i} style={styles.paragraph}>
+          <Text style={styles.bold}>{row.label}</Text>
+          {row.value ? `  ${row.value}` : ""}
+        </Text>
+      ))}
+      <FooterPages meta={meta} />
+    </Page>
+  );
+}
+
+const PageBreakMarker = () => <View break />;
+
+export default function MyPDFDocument({
+  content,
+  meta,
+}: {
+  content: string;
+  meta: DocMeta;
+}) {
+  const nodes = parseHTMLToNodes(content);
+
+  const pages: React.ReactNode[][] = [[]];
+  nodes.forEach((node) => {
+    if (React.isValidElement(node) && node.type === PageBreakMarker) {
+      pages.push([]);
+    } else {
+      pages[pages.length - 1].push(node);
+    }
+  });
+
+  return (
+    <Document>
+      <TitlePage meta={meta} />
+      <InfoPage meta={meta} />
+      {pages.map((pageNodes, idx) => (
+        <Page key={idx} size="A4" style={styles.page}>
+          <RedBar />
+          <Logo />
+          {pageNodes}
+          <FooterPages meta={meta} />
+        </Page>
+      ))}
+    </Document>
+  );
+}
 
 const styles = StyleSheet.create({
   titlePage: {
@@ -135,14 +724,8 @@ const styles = StyleSheet.create({
     left: RED_BAR_WIDTH + PAGE_PADDING_H,
     right: PAGE_PADDING_H,
   },
-  paragraph: {
-    ...BASE_TEXT,
-    marginBottom: 2,
-    textAlign: "justify",
-  },
-  indentedParagraph: {
-    textIndent: 20,
-  },
+  paragraph: { ...BASE_TEXT, marginBottom: 2, textAlign: "justify" },
+  indentedParagraph: { textIndent: 20 },
   h1: {
     ...BASE_TEXT,
     fontSize: 16,
@@ -168,41 +751,7 @@ const styles = StyleSheet.create({
   dashItem: { ...BASE_TEXT, marginBottom: 2, flexDirection: "row" },
   dashBullet: { width: 16, ...BASE_TEXT },
   dashItemText: { flex: 1, ...BASE_TEXT, textAlign: "justify" },
-  table: {
-    width: TABLE_WIDTH,
-    marginBottom: 8,
-    marginTop: 4,
-    borderLeftWidth: 1,
-    borderLeftColor: "#111111",
-    borderTopWidth: 1,
-    borderTopColor: "#111111",
-  },
-  tableRow: { flexDirection: "row", minHeight: TABLE_ROW_MIN_HEIGHT },
-  tableCellBox: {
-    padding: 5,
-    borderRightWidth: 1,
-    borderRightColor: "#111111",
-    borderBottomWidth: 1,
-    borderBottomColor: "#111111",
-    minHeight: TABLE_ROW_MIN_HEIGHT,
-    justifyContent: "center",
-    overflow: "hidden",
-  },
-  tableCellBoxHeader: {
-    padding: 5,
-    borderRightWidth: 1,
-    borderRightColor: "#111111",
-    borderBottomWidth: 1,
-    borderBottomColor: "#111111",
-    minHeight: TABLE_ROW_MIN_HEIGHT,
-    justifyContent: "center",
-    overflow: "hidden",
-  },
-  tableCellText: {
-    ...BASE_TEXT,
-    fontSize: 11,
-    textAlign: "left",
-  },
+  tableCellText: { ...BASE_TEXT, fontSize: 11, textAlign: "left" },
   tableCellTextHeader: {
     ...BASE_TEXT,
     fontWeight: "bold",
@@ -210,578 +759,4 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 1.15,
   },
-  tableCellVerticalWrap: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  tableCellVerticalText: {
-    ...BASE_TEXT,
-    fontSize: 10,
-    textAlign: "center",
-  },
 });
-
-const RedBar = () => <View style={styles.redBar} fixed />;
-const Logo = () => (
-  <View style={styles.logo} fixed>
-    {/* eslint-disable-next-line jsx-a11y/alt-text */}
-    <Image src="/logo.png" />
-  </View>
-);
-const FooterPage1 = () => (
-  <Text style={styles.footerCopyOnly}>{FOOTER_COPY}</Text>
-);
-const FooterPages = () => (
-  <>
-    <Text style={styles.footerLegal} fixed>
-      {FOOTER_LEGAL}
-    </Text>
-    <Text style={styles.footerCopyBelow} fixed>
-      {FOOTER_COPY}
-    </Text>
-  </>
-);
-
-function getInlineStyles(node: Element): Style {
-  const style: Record<string, unknown> = {};
-  const attr = node.attribs?.style ?? "";
-  attr.split(";").forEach((rule) => {
-    const i = rule.indexOf(":");
-    if (i === -1) return;
-    const prop = rule.slice(0, i).trim();
-    const val = rule.slice(i + 1).trim();
-    if (!val) return;
-    if (prop === "color") style.color = val;
-    if (prop === "text-align") style.textAlign = val;
-  });
-  return style as Style;
-}
-
-function renderInlineChildren(nodes: DOMNode[]): React.ReactNode[] {
-  return nodes.map((node, i) => {
-    if (node.type === "text")
-      return <React.Fragment key={i}>{(node as TextNode).data}</React.Fragment>;
-    if (node instanceof Element) {
-      const s = getInlineStyles(node);
-      const ch = renderInlineChildren(node.children as DOMNode[]);
-      if (node.name === "strong" || node.name === "b")
-        return (
-          <Text key={i} style={[styles.bold, s]}>
-            {ch}
-          </Text>
-        );
-      if (node.name === "em" || node.name === "i")
-        return (
-          <Text key={i} style={[styles.italic, s]}>
-            {ch}
-          </Text>
-        );
-      if (node.name === "u")
-        return (
-          <Text key={i} style={[styles.underline, s]}>
-            {ch}
-          </Text>
-        );
-      if (node.name === "s" || node.name === "del")
-        return (
-          <Text key={i} style={[styles.strike, s]}>
-            {ch}
-          </Text>
-        );
-      if (node.name === "span")
-        return (
-          <Text key={i} style={s}>
-            {ch}
-          </Text>
-        );
-      return <React.Fragment key={i}>{ch}</React.Fragment>;
-    }
-    return null;
-  });
-}
-
-function parsePx(val?: string): number | undefined {
-  if (!val) return undefined;
-  const n = Number.parseFloat(val);
-  return Number.isFinite(n) ? n : undefined;
-}
-
-function renderTable(tableNode: Element, index: number): React.ReactNode {
-  const allRows: Element[] = [];
-  function collectRows(n: Element) {
-    for (const child of n.children as DOMNode[]) {
-      if (!(child instanceof Element)) continue;
-      if (child.name === "tr") allRows.push(child);
-      else if (["tbody", "thead", "tfoot"].includes(child.name))
-        collectRows(child);
-    }
-  }
-  collectRows(tableNode);
-
-  const rowsCells = allRows.map((row) =>
-    (
-      (row.children as DOMNode[]).filter(
-        (c) =>
-          c instanceof Element && ["td", "th"].includes((c as Element).name),
-      ) as Element[]
-    ).map((cell) => {
-      const colspanRaw = cell.attribs?.colspan ?? "1";
-      const rowspanRaw = cell.attribs?.rowspan ?? "1";
-      const colspan = Math.max(1, Number.parseInt(colspanRaw, 10) || 1);
-      const rowspan = Math.max(1, Number.parseInt(rowspanRaw, 10) || 1);
-      const vertical =
-        cell.attribs?.["data-vertical"] === "true" ||
-        cell.attribs?.class?.includes("vertical");
-      const colWidthHint = parsePx(cell.attribs?.["data-colwidth"]);
-      return { cell, colspan, rowspan, vertical, colWidthHint };
-    }),
-  );
-
-  const colCount = Math.max(
-    1,
-    ...rowsCells.map((cells) =>
-      cells.reduce((sum, c) => sum + (c.colspan || 1), 0),
-    ),
-  );
-  const defaultColWidth = TABLE_WIDTH / colCount;
-
-  const columnWidths: Array<number | undefined> = new Array(colCount).fill(
-    undefined,
-  );
-  const applyWidthHintsFromRow = (row: (typeof rowsCells)[number]) => {
-    let cursor = 0;
-    row.forEach((c) => {
-      const span = Math.max(1, c.colspan);
-      if (c.colWidthHint !== undefined && span === 1 && cursor < colCount) {
-        columnWidths[cursor] = c.colWidthHint;
-      }
-      cursor += span;
-    });
-  };
-  if (rowsCells[0]) applyWidthHintsFromRow(rowsCells[0]);
-  if (rowsCells[1]) applyWidthHintsFromRow(rowsCells[1]);
-
-  const specified = columnWidths.filter(
-    (w) => typeof w === "number",
-  ) as number[];
-  const specifiedTotal = specified.reduce((a, b) => a + b, 0);
-  const unspecifiedCount = columnWidths.filter((w) => w === undefined).length;
-  const remaining = Math.max(0, TABLE_WIDTH - specifiedTotal);
-  const fallback =
-    unspecifiedCount > 0 ? remaining / unspecifiedCount : defaultColWidth;
-  const colWidthAt = (i: number): number => columnWidths[i] ?? fallback;
-
-  const rowSpanLeft = new Array<number>(colCount).fill(0);
-
-  return (
-    <View key={index} style={styles.table}>
-      {rowsCells.map((cells, ri) => {
-        for (let ci = 0; ci < rowSpanLeft.length; ci++) {
-          rowSpanLeft[ci] = Math.max(0, rowSpanLeft[ci] - 1);
-        }
-
-        const rowItems: React.ReactNode[] = [];
-        let colCursor = 0;
-
-        const isHeaderRow = cells.some((c) => c.cell.name === "th");
-
-        cells.forEach((item, cellIdx) => {
-          while (colCursor < colCount && rowSpanLeft[colCursor] > 0)
-            colCursor++;
-          const startCol = colCursor;
-          const spanCols = Math.min(item.colspan, colCount - startCol);
-          const spanRows = item.rowspan;
-
-          for (let c = startCol; c < startCol + spanCols; c++) {
-            rowSpanLeft[c] = Math.max(rowSpanLeft[c], spanRows);
-          }
-
-          const boxStyle = isHeaderRow
-            ? styles.tableCellBoxHeader
-            : styles.tableCellBox;
-          const textStyle = isHeaderRow
-            ? styles.tableCellTextHeader
-            : styles.tableCellText;
-
-          const children = renderInlineChildren(
-            item.cell.children as DOMNode[],
-          );
-          const hasContent = (item.cell.children as DOMNode[]).some(
-            (c) =>
-              (c.type === "text" && (c as TextNode).data.trim()) ||
-              c instanceof Element,
-          );
-
-          let cellWidth = 0;
-          for (let k = 0; k < spanCols; k++)
-            cellWidth += colWidthAt(startCol + k);
-          const cellMinHeight = TABLE_ROW_MIN_HEIGHT * spanRows;
-
-          const effectiveHeight = item.vertical
-            ? Math.max(cellMinHeight, 110)
-            : cellMinHeight;
-
-          if (item.vertical) {
-            rowItems.push(
-              <View
-                key={`${ri}-${cellIdx}`}
-                style={[
-                  boxStyle,
-                  {
-                    width: cellWidth,
-                    minHeight: effectiveHeight,
-                    overflow: "hidden",
-                  },
-                ]}
-              >
-                <View
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <View
-                    style={{
-                      transform: "rotate(-90deg)",
-                      width: effectiveHeight - 10,
-                      alignItems: "center",
-                    }}
-                  >
-                    <Text
-                      style={[
-                        textStyle,
-                        { textAlign: "center", flexWrap: "wrap" },
-                      ]}
-                    >
-                      {hasContent ? children : " "}
-                    </Text>
-                  </View>
-                </View>
-              </View>,
-            );
-          } else {
-            rowItems.push(
-              <View
-                key={`${ri}-${cellIdx}`}
-                style={[
-                  boxStyle,
-                  { width: cellWidth, minHeight: cellMinHeight },
-                ]}
-              >
-                <Text style={textStyle}>{hasContent ? children : " "}</Text>
-              </View>,
-            );
-          }
-
-          colCursor = startCol + spanCols;
-        });
-
-        while (colCursor < colCount) {
-          if (rowSpanLeft[colCursor] > 0) {
-            colCursor++;
-            continue;
-          }
-          rowItems.push(
-            <View
-              key={`${ri}-empty-${colCursor}`}
-              style={[
-                isHeaderRow ? styles.tableCellBoxHeader : styles.tableCellBox,
-                {
-                  width: colWidthAt(colCursor),
-                  minHeight: TABLE_ROW_MIN_HEIGHT,
-                },
-              ]}
-            >
-              <Text
-                style={
-                  isHeaderRow
-                    ? styles.tableCellTextHeader
-                    : styles.tableCellText
-                }
-              >
-                {" "}
-              </Text>
-            </View>,
-          );
-          colCursor++;
-        }
-
-        return (
-          <View key={ri} style={styles.tableRow}>
-            {rowItems}
-          </View>
-        );
-      })}
-    </View>
-  );
-}
-
-function renderNode(node: DOMNode, index: number): React.ReactNode {
-  if (!(node instanceof Element)) {
-    if (node.type === "text") {
-      const data = (node as TextNode).data;
-      if (data?.trim())
-        return (
-          <Text key={index} style={styles.paragraph}>
-            {data}
-          </Text>
-        );
-    }
-    return null;
-  }
-
-  if (
-    node instanceof Element &&
-    node.name === "div" &&
-    node.attribs?.class?.includes("page-break")
-  ) {
-    return <PageBreakMarker key={index} />;
-  }
-
-  const s = getInlineStyles(node);
-  const ch = renderInlineChildren(node.children as DOMNode[]);
-  const isIndented = node.attribs?.["data-indent"] === "true";
-
-  const indentStyle = isIndented ? styles.indentedParagraph : {};
-
-  if (node.name === "p") {
-    return (
-      <Text key={index} style={[styles.paragraph, s, indentStyle]}>
-        {ch}
-      </Text>
-    );
-  }
-
-  if (node.name === "h1") {
-    return (
-      <Text key={index} style={[styles.h1, s, indentStyle]}>
-        {ch}
-      </Text>
-    );
-  }
-
-  if (node.name === "h2") {
-    return (
-      <Text key={index} style={[styles.h2, s, indentStyle]}>
-        {ch}
-      </Text>
-    );
-  }
-
-  if (node.name === "ul" && node.attribs?.["data-type"] !== "dash-list") {
-    return (
-      <View key={index}>
-        {(node.children as DOMNode[])
-          .filter((c) => c instanceof Element && (c as Element).name === "li")
-          .map((li, liIdx) => (
-            <View key={liIdx} style={styles.listItem}>
-              <Text style={styles.listBullet}>{"• "}</Text>
-              <Text style={styles.listItemText}>
-                {renderInlineChildren((li as Element).children as DOMNode[])}
-              </Text>
-            </View>
-          ))}
-      </View>
-    );
-  }
-
-  if (node.name === "ul" && node.attribs?.["data-type"] === "dash-list") {
-    return (
-      <View key={index}>
-        {(node.children as DOMNode[])
-          .filter(
-            (c) =>
-              c instanceof Element &&
-              (c as Element).name === "li" &&
-              (c as Element).attribs?.["data-type"] === "dash",
-          )
-          .map((li, liIdx) => (
-            <View key={liIdx} style={styles.dashItem}>
-              <Text style={styles.dashBullet}>{"— "}</Text>
-              <Text style={styles.dashItemText}>
-                {renderInlineChildren((li as Element).children as DOMNode[])}
-              </Text>
-            </View>
-          ))}
-      </View>
-    );
-  }
-
-  if (node.name === "ol") {
-    return (
-      <View key={index}>
-        {(node.children as DOMNode[])
-          .filter((c) => c instanceof Element && (c as Element).name === "li")
-          .map((li, liIdx) => (
-            <View key={liIdx} style={styles.listItem}>
-              <Text style={styles.listBullet}>{`${liIdx + 1}. `}</Text>
-              <Text style={styles.listItemText}>
-                {renderInlineChildren((li as Element).children as DOMNode[])}
-              </Text>
-            </View>
-          ))}
-      </View>
-    );
-  }
-
-  if (node.name === "table") return renderTable(node, index);
-  if (node.name === "br") return <Text key={index}>{"\n"}</Text>;
-  return null;
-}
-
-function parseHTMLToNodes(html: string): React.ReactNode[] {
-  const result: React.ReactNode[] = [];
-  let index = 0;
-  parse(html, {
-    replace: (node) => {
-      const rendered = renderNode(node, index++);
-      if (rendered) result.push(rendered);
-      return <></>;
-    },
-  });
-  return result;
-}
-
-function TitlePage() {
-  return (
-    <Page size="A4" style={styles.titlePage}>
-      <RedBar />
-      <Logo />
-      <View style={{ alignItems: "flex-end", marginBottom: 10 }}>
-        <Text style={styles.approvalBold}>«УТВЕРЖДАЮ»</Text>
-        <Text style={styles.approvalNormal}>Председатель Правления</Text>
-        <Text style={styles.approvalNormal}>
-          АО «Университет КАЗГЮУ имени М.С.Нарикбаева»
-        </Text>
-        <View
-          style={{
-            width: 160,
-            borderBottomWidth: 1,
-            borderBottomColor: "#111",
-            marginVertical: 6,
-          }}
-        />
-        <Text style={styles.approvalBold}>Нарикбаев Т.М.</Text>
-        <Text style={styles.approvalNormal}>«____» __________ 2025 г.</Text>
-      </View>
-      <Text style={styles.docTitle}>ДОЛЖНОСТНАЯ ИНСТРУКЦИЯ</Text>
-      <Text style={styles.docSubtitle}>
-        Research Assistant (Ассистент исследователя)
-      </Text>
-      <Text style={styles.docSubtitle}>Высшей Школы</Text>
-      <View style={{ marginTop: 80, alignItems: "flex-end" }}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            marginBottom: 16,
-          }}
-        >
-          <Text
-            style={{
-              fontFamily: "Calibri",
-              fontSize: 12,
-              fontWeight: "bold",
-              color: "#111",
-            }}
-          >
-            Экз. №
-          </Text>
-          <View
-            style={{
-              width: 100,
-              borderBottomWidth: 1,
-              borderBottomColor: "#111",
-              marginLeft: 4,
-            }}
-          />
-        </View>
-        <View style={{ flexDirection: "row", alignItems: "center" }}>
-          <Text
-            style={{
-              fontFamily: "Calibri",
-              fontSize: 12,
-              fontWeight: "bold",
-              color: "#111",
-            }}
-          >
-            Копия №
-          </Text>
-          <View
-            style={{
-              width: 80,
-              borderBottomWidth: 1,
-              borderBottomColor: "#111",
-              marginLeft: 4,
-            }}
-          />
-        </View>
-      </View>
-      <Text style={styles.cityText}>АСТАНА</Text>
-      <FooterPage1 />
-    </Page>
-  );
-}
-
-function InfoPage() {
-  return (
-    <Page size="A4" style={styles.page}>
-      <RedBar />
-      <Logo />
-      <Text style={styles.paragraph}>
-        <Text style={styles.bold}>1. РАЗРАБОТАНА И ВНЕСЕНА:</Text>
-      </Text>
-      <Text style={styles.paragraph}>
-        <Text style={styles.bold}>2. УТВЕРЖДЕНА И ВВЕДЕНА В ДЕЙСТВИЕ:</Text>
-        {"  "}приказом Председателя Правления АО «Университет КАЗГЮУ имени
-        М.С.Нарикбаева» № ______ от «___»______ 2025 г.
-      </Text>
-      <Text style={styles.paragraph}>
-        <Text style={styles.bold}>3. РАЗРАБОТЧИКИ:</Text>
-        {"  "}Высшие Школы, Департамент стратегии и HR, Управление правого
-        обеспечения.
-      </Text>
-      <Text style={styles.paragraph}>
-        <Text style={styles.bold}>4. ПЕРИОДИЧНОСТЬ ПРОВЕРКИ:</Text>
-        {"  "}1 раз в год.
-      </Text>
-      <FooterPages />
-    </Page>
-  );
-}
-
-const PageBreakMarker = () => <View break />;
-
-export default function MyPDFDocument({ content }: { content: string }) {
-  const nodes = parseHTMLToNodes(content);
-
-  const pages: React.ReactNode[][] = [[]];
-  nodes.forEach((node) => {
-    if (React.isValidElement(node) && node.type === PageBreakMarker) {
-      pages.push([]);
-    } else {
-      pages[pages.length - 1].push(node);
-    }
-  });
-
-  return (
-    <Document>
-      <TitlePage />
-      <InfoPage />
-      {pages.map((pageNodes, idx) => (
-        <Page key={idx} size="A4" style={styles.page}>
-          <RedBar />
-          <Logo />
-          {pageNodes}
-          <FooterPages />
-        </Page>
-      ))}
-    </Document>
-  );
-}

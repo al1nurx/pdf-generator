@@ -297,7 +297,7 @@ export const EditorWrapper = ({
       PageBreak,
       DashListItem,
       DashList,
-      Table.configure({ resizable: false }),
+      Table.configure({ resizable: true, allowTableNodeSelection: true }),
       TableRow,
       TableHeaderWithVertical,
       TableCellWithVertical,
@@ -605,9 +605,32 @@ export const EditorWrapper = ({
         .ProseMirror ::selection { background: #fee2e2; }
         /* Tables */
         .ProseMirror table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 11px; }
-        .ProseMirror table td, .ProseMirror table th {
-          border: 1px solid #111; padding: 5px 7px;
-          min-width: 40px; min-height: 22px; vertical-align: top;
+        .ProseMirror table table {
+        margin: 0;
+        border-style: hidden; /* Скрываем внешнюю границу вложенной таблицы, чтобы не двоилась с границей ячейки */
+        }
+
+        /* Чтобы текст в ячейках без вложенных таблиц не прилипал к краям */
+        .ProseMirror table td:not(:has(table)) {
+        padding: 5px 7px;
+        }
+        .ProseMirror table td,
+        .ProseMirror table th {
+        border: 1px solid #111;
+        padding: 0; /* Обнуляем, чтобы вложенная таблица прилипла к краям */
+        min-width: 40px;
+        vertical-align: top;
+        position: relative;
+        }
+        .ProseMirror table td > p,
+        .ProseMirror table th > p {
+        margin: 0;
+        padding: 5px 7px; /* Возвращаем визуальный отступ тексту */
+        text-indent: 0;
+        }
+        .ProseMirror table td > table {
+        margin: -1px; /* Компенсация двойных границ, если нужно */
+        width: calc(100% + 2px);
         }
         .ProseMirror table th { font-weight: bold; text-align: center; background: #f9f9f9; }
         .ProseMirror table td p, .ProseMirror table th p { margin: 0; text-indent: 0; }
