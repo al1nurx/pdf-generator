@@ -1,5 +1,6 @@
 "use client";
 
+import React, { useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Heading from "@tiptap/extension-heading";
@@ -33,7 +34,6 @@ import {
   IndentIncrease,
   IndentDecrease,
   Table as TableIcon,
-  Plus,
 } from "lucide-react";
 
 type Dispatch = (tr: Transaction) => void;
@@ -171,6 +171,19 @@ const TextIndent = Extension.create({
           dispatch?: Dispatch;
         }) => {
           const { from, to } = state.selection;
+
+          let hasUnindented = false;
+          state.doc.nodesBetween(from, to, (node: ProsemirrorNode) => {
+            if (
+              node.type.name === "paragraph" ||
+              node.type.name === "heading"
+            ) {
+              if (!node.attrs.indent) hasUnindented = true;
+            }
+          });
+
+          const nextIndent = hasUnindented;
+
           state.doc.nodesBetween(
             from,
             to,
@@ -182,7 +195,7 @@ const TextIndent = Extension.create({
                 if (dispatch)
                   tr.setNodeMarkup(pos, undefined, {
                     ...node.attrs,
-                    indent: !node.attrs.indent,
+                    indent: nextIndent,
                   });
               }
             },
@@ -266,7 +279,7 @@ const Btn = ({
       e.preventDefault();
       onClick();
     }}
-    className={`flex items-center justify-center h-7 min-w-7 px-2 rounded-md text-[13px] font-medium transition-all duration-150 select-none ${
+    className={`flex items-center justify-center h-7 min-w-7 px-2 rounded-md text-[13px] transition-all duration-150 select-none ${
       active
         ? "bg-[#D62E1F] text-white shadow-sm shadow-red-200"
         : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100"
@@ -306,6 +319,37 @@ export const EditorWrapper = ({
     content,
     immediatelyRender: false,
     onUpdate: ({ editor: ed }) => onChange(ed.getHTML()),
+    editorProps: {
+      handlePaste(view, event) {
+        const text = event.clipboardData?.getData("text/plain");
+        if (!text) return false;
+        event.preventDefault();
+        const { state, dispatch } = view;
+        const { tr, selection } = state;
+        const lines = text.split("\n");
+        const nodes = lines
+          .filter((line) => line.trim() !== "")
+          .map((line) =>
+            state.schema.nodes.paragraph.create(
+              {},
+              line ? state.schema.text(line) : undefined,
+            ),
+          );
+        if (nodes.length === 0) return true;
+        tr.replaceWith(selection.from, selection.to, nodes);
+        dispatch(tr);
+        return true;
+      },
+    },
+  });
+
+  const [tableToolbarOpen, setTableToolbarOpen] = useState(false);
+  const [tableGridSize, setTableGridSize] = useState<{
+    rows: number;
+    cols: number;
+  }>({
+    rows: 0,
+    cols: 0,
   });
 
   if (!editor) return null;
@@ -317,14 +361,13 @@ export const EditorWrapper = ({
     { label: "Синий", value: "#1D4ED8" },
   ];
 
-  const isIndented = editor.isActive("paragraph", { indent: true });
+  const isIndented =
+    editor.isActive("paragraph", { indent: true }) ||
+    editor.isActive("heading", { indent: true });
   const inTable = editor.isActive("table");
-  const cellVertical =
-    editor.isActive("tableHeader", { vertical: true }) ||
-    editor.isActive("tableCell", { vertical: true });
 
   return (
-    <div className="flex flex-col h-full border rounded-lg bg-white shadow-sm overflow-hidden">
+    <div className="tiptap-editor-root relative flex flex-col h-full border rounded-lg bg-white shadow-sm overflow-hidden">
       <div className="sticky top-0 z-10 bg-white border-b border-zinc-200">
         <div className="flex flex-wrap items-center gap-0.5 px-3 py-2">
           <Btn
@@ -366,12 +409,6 @@ export const EditorWrapper = ({
             active={editor.isActive("heading", { level: 2 })}
           >
             <span className="text-[12px] font-semibold">12</span>
-          </Btn>
-          <Btn
-            onClick={() => editor.chain().focus().setParagraph().run()}
-            active={editor.isActive("paragraph") && !editor.isActive("heading")}
-          >
-            <span className="text-[12px] font-semibold">P</span>
           </Btn>
 
           <Sep />
@@ -444,67 +481,187 @@ export const EditorWrapper = ({
 
           <Sep />
 
-          <Btn
-            onClick={() =>
-              editor
-                .chain()
-                .focus()
-                .insertTable({ rows: 3, cols: 4, withHeaderRow: true })
-                .run()
-            }
-            title="Вставить таблицу"
-          >
-            <TableIcon size={14} />
-          </Btn>
-          {inTable && (
-            <>
-              <Btn
-                onClick={() => editor.chain().focus().addColumnAfter().run()}
-                title="+столбец"
-              >
-                <div className="flex items-center gap-0.5 text-[10px] font-medium">
-                  <Plus size={10} />С
+          <div className="relative">
+            <Btn
+              onClick={() => setTableToolbarOpen((v) => !v)}
+              active={tableToolbarOpen}
+              title="Таблица"
+            >
+              <TableIcon size={14} />
+            </Btn>
+            {tableToolbarOpen && (
+              <div className="absolute right-0 mt-1 z-30 bg-white border border-zinc-200 rounded-md shadow-lg text-[11px] min-w-[220px]">
+                <div className="px-3 pt-2 pb-1">
+                  <div className="grid grid-cols-8 gap-0.5">
+                    {Array.from({ length: 6 }).map((_, r) =>
+                      Array.from({ length: 8 }).map((__, c) => {
+                        const active =
+                          r < tableGridSize.rows && c < tableGridSize.cols;
+                        return (
+                          <button
+                            key={`${r}-${c}`}
+                            type="button"
+                            className={`h-4 w-4 border rounded-sm ${
+                              active
+                                ? "bg-[#D62E1F] border-[#D62E1F]"
+                                : "bg-white border-zinc-200 hover:bg-zinc-100"
+                            }`}
+                            onMouseEnter={() =>
+                              setTableGridSize({ rows: r + 1, cols: c + 1 })
+                            }
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              const rows = r + 1;
+                              const cols = c + 1;
+                              editor
+                                .chain()
+                                .focus()
+                                .insertTable({
+                                  rows,
+                                  cols,
+                                  withHeaderRow: true,
+                                })
+                                .run();
+                              setTableToolbarOpen(false);
+                              setTableGridSize({ rows: 0, cols: 0 });
+                            }}
+                          />
+                        );
+                      }),
+                    )}
+                  </div>
+                  <div className="mt-2 text-[10px] text-zinc-500">
+                    {tableGridSize.rows > 0 && tableGridSize.cols > 0
+                      ? `${tableGridSize.rows} × ${tableGridSize.cols}`
+                      : "Выберите размер таблицы"}
+                  </div>
                 </div>
-              </Btn>
-              <Btn
-                onClick={() => editor.chain().focus().addRowAfter().run()}
-                title="+строка"
-              >
-                <div className="flex items-center gap-0.5 text-[10px] font-medium">
-                  <Plus size={10} />Р
-                </div>
-              </Btn>
-              <Btn
-                onClick={() => editor.chain().focus().deleteColumn().run()}
-                title="−столбец"
-              >
-                <div className="flex items-center gap-0.5 text-[10px] font-medium">
-                  <Minus size={10} />С
-                </div>
-              </Btn>
-              <Btn
-                onClick={() => editor.chain().focus().deleteRow().run()}
-                title="−строка"
-              >
-                <div className="flex items-center gap-0.5 text-[10px] font-medium">
-                  <Minus size={10} />Р
-                </div>
-              </Btn>
-              <Btn
-                onClick={() => editor.chain().focus().deleteTable().run()}
-                title="Удалить таблицу"
-              >
-                <span className="text-[10px]">✕</span>
-              </Btn>
-              <Btn
-                onClick={() => editor.commands.toggleCellVertical()}
-                active={cellVertical}
-                title="Вертикальный текст в ячейке"
-              >
-                <span className="text-[10px] font-semibold">V</span>
-              </Btn>
-            </>
-          )}
+                <div className="h-px bg-zinc-200 my-1" />
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().addRowBefore().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Добавить строку до
+                </button>
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().addRowAfter().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Добавить строку после
+                </button>
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().addColumnBefore().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Добавить столбец до
+                </button>
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().addColumnAfter().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Добавить столбец после
+                </button>
+                <div className="h-px bg-zinc-200 my-1" />
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().deleteRow().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Удалить строку
+                </button>
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().deleteColumn().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Удалить столбец
+                </button>
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().deleteTable().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Удалить таблицу
+                </button>
+                <div className="h-px bg-zinc-200 my-1" />
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.commands.toggleCellVertical();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Вертикальный текст в ячейке
+                </button>
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().mergeCells().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Объединить ячейки
+                </button>
+                <button
+                  type="button"
+                  className={`w-full text-left px-3 py-1.5 hover:bg-zinc-100 rounded-b-md ${!inTable ? "opacity-50 cursor-not-allowed" : ""}`}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    if (!inTable) return;
+                    editor.chain().focus().splitCell().run();
+                    setTableToolbarOpen(false);
+                  }}
+                >
+                  Разъединить ячейки
+                </button>
+              </div>
+            )}
+          </div>
 
           <Sep />
 
@@ -576,13 +733,13 @@ export const EditorWrapper = ({
         }
         .ProseMirror p {
           margin: 0 0 2px 0;
-          text-indent: 0;
         }
-        .ProseMirror p[data-indent="true"] {
-          text-indent: 2em;
+        .ProseMirror p:not([data-indent="true"]) {
+        text-indent: 0;
         }
         .ProseMirror h1[data-indent="true"],
-        .ProseMirror h2[data-indent="true"] {
+        .ProseMirror h2[data-indent="true"],
+        .ProseMirror p[data-indent="true"] {
           padding-left: 20px;
         }
         .ProseMirror h1 {
@@ -590,77 +747,18 @@ export const EditorWrapper = ({
           margin: 6px 0 3px 0; text-indent: 0; text-align: center;
         }
         .ProseMirror h2 {
-          font-size: 12px; font-weight: 700;
+          font-size: 12px;
           margin: 5px 0 2px 0; text-indent: 0;
         }
         .ProseMirror ul { list-style: disc; padding-left: 18px; margin: 0 0 2px 0; }
         .ProseMirror ol { list-style: decimal; padding-left: 18px; margin: 0 0 2px 0; }
         .ProseMirror li { margin-bottom: 1px; }
         .ProseMirror li p { margin: 0; text-indent: 0; }
-        /* Dash list */
         .ProseMirror ul[data-type="dash-list"] { list-style: none; padding-left: 0; margin: 0 0 2px 0; }
         .ProseMirror ul[data-type="dash-list"] > li[data-type="dash"] { display: flex; gap: 6px; margin-bottom: 1px; }
         .ProseMirror ul[data-type="dash-list"] > li[data-type="dash"]::before { content: "—"; flex-shrink: 0; }
         .ProseMirror ul[data-type="dash-list"] > li[data-type="dash"] > p { margin: 0; text-indent: 0; flex: 1; }
         .ProseMirror ::selection { background: #fee2e2; }
-        /* Tables */
-        .ProseMirror table { border-collapse: collapse; width: 100%; margin: 6px 0; font-size: 11px; }
-        .ProseMirror table table {
-        margin: 0;
-        border-style: hidden; /* Скрываем внешнюю границу вложенной таблицы, чтобы не двоилась с границей ячейки */
-        }
-
-        /* Чтобы текст в ячейках без вложенных таблиц не прилипал к краям */
-        .ProseMirror table td:not(:has(table)) {
-        padding: 5px 7px;
-        }
-        .ProseMirror table td,
-        .ProseMirror table th {
-        border: 1px solid #111;
-        padding: 0; /* Обнуляем, чтобы вложенная таблица прилипла к краям */
-        min-width: 40px;
-        vertical-align: top;
-        position: relative;
-        }
-        .ProseMirror table td > p,
-        .ProseMirror table th > p {
-        margin: 0;
-        padding: 5px 7px; /* Возвращаем визуальный отступ тексту */
-        text-indent: 0;
-        }
-        .ProseMirror table td > table {
-        margin: -1px; /* Компенсация двойных границ, если нужно */
-        width: calc(100% + 2px);
-        }
-        .ProseMirror table th { font-weight: bold; text-align: center; background: #f9f9f9; }
-        .ProseMirror table td p, .ProseMirror table th p { margin: 0; text-indent: 0; }
-
-        /* Vertical cells — writing-mode поворачивает текст как в image 2 */
-        .ProseMirror table td[data-vertical="true"],
-        .ProseMirror table th[data-vertical="true"] {
-          writing-mode: vertical-rl;
-          text-orientation: mixed;
-          transform: rotate(180deg);
-          text-align: center;
-          vertical-align: middle;
-          min-height: 80px;
-          padding: 8px 4px;
-        }
-        /* Параграф внутри вертикальной ячейки не должен мешать */
-        .ProseMirror table td[data-vertical="true"] p,
-        .ProseMirror table th[data-vertical="true"] p {
-          writing-mode: vertical-rl;
-          transform: rotate(180deg);
-          margin: 0;
-          text-indent: 0;
-        }
-        .ProseMirror .selectedCell:after {
-          background: rgba(214,46,31,0.07); content: "";
-          position: absolute; inset: 0; pointer-events: none; z-index: 2;
-        }
-        .ProseMirror .tableWrapper { overflow-x: auto; }
-
-        /* Page break marker */
         .ProseMirror div.page-break {
           position: relative;
           margin: 10px 0;
