@@ -116,23 +116,19 @@ const TableCellVertical = Extension.create({
     return {
       toggleCellVertical:
         () =>
-        ({ editor }: CommandProps) => {
+        ({ editor, chain }: CommandProps) => {
           const inHeader = editor.isActive("tableHeader");
           const inCell = editor.isActive("tableCell");
+
           if (!inHeader && !inCell) return false;
 
-          const activeVertical =
-            editor.isActive("tableHeader", { vertical: true }) ||
-            editor.isActive("tableCell", { vertical: true });
+          const type = inHeader ? "tableHeader" : "tableCell";
+          const activeVertical = editor.isActive(type, { vertical: true });
 
-          const nextVertical = !activeVertical;
-          if (inHeader)
-            return editor.commands.updateAttributes("tableHeader", {
-              vertical: nextVertical,
-            });
-          return editor.commands.updateAttributes("tableCell", {
-            vertical: nextVertical,
-          });
+          return chain()
+            .focus()
+            .updateAttributes(type, { vertical: !activeVertical })
+            .run();
         },
     };
   },
@@ -367,7 +363,7 @@ export const EditorWrapper = ({
   const inTable = editor.isActive("table");
 
   return (
-    <div className="tiptap-editor-root relative flex flex-col h-full border rounded-lg bg-white shadow-sm overflow-hidden">
+    <div className="tiptap-editor-root relative flex flex-col h-full bg-white shadow-sm overflow-hidden">
       <div className="sticky top-0 z-10 bg-white border-b border-zinc-200">
         <div className="flex flex-wrap items-center gap-0.5 px-3 py-2">
           <Btn
@@ -721,60 +717,6 @@ export const EditorWrapper = ({
           <EditorContent editor={editor} />
         </div>
       </div>
-
-      <style>{`
-        .ProseMirror {
-          outline: none;
-          min-height: 400px;
-          font-size: 12px;
-          line-height: 1.4;
-          color: #111;
-          caret-color: #D62E1F;
-        }
-        .ProseMirror p {
-          margin: 0 0 2px 0;
-        }
-        .ProseMirror p:not([data-indent="true"]) {
-        text-indent: 0;
-        }
-        .ProseMirror h1[data-indent="true"],
-        .ProseMirror h2[data-indent="true"],
-        .ProseMirror p[data-indent="true"] {
-          padding-left: 20px;
-        }
-        .ProseMirror h1 {
-          font-size: 16px; font-weight: 700;
-          margin: 6px 0 3px 0; text-indent: 0; text-align: center;
-        }
-        .ProseMirror h2 {
-          font-size: 12px;
-          margin: 5px 0 2px 0; text-indent: 0;
-        }
-        .ProseMirror ul { list-style: disc; padding-left: 18px; margin: 0 0 2px 0; }
-        .ProseMirror ol { list-style: decimal; padding-left: 18px; margin: 0 0 2px 0; }
-        .ProseMirror li { margin-bottom: 1px; }
-        .ProseMirror li p { margin: 0; text-indent: 0; }
-        .ProseMirror ul[data-type="dash-list"] { list-style: none; padding-left: 0; margin: 0 0 2px 0; }
-        .ProseMirror ul[data-type="dash-list"] > li[data-type="dash"] { display: flex; gap: 6px; margin-bottom: 1px; }
-        .ProseMirror ul[data-type="dash-list"] > li[data-type="dash"]::before { content: "—"; flex-shrink: 0; }
-        .ProseMirror ul[data-type="dash-list"] > li[data-type="dash"] > p { margin: 0; text-indent: 0; flex: 1; }
-        .ProseMirror ::selection { background: #fee2e2; }
-        .ProseMirror div.page-break {
-          position: relative;
-          margin: 10px 0;
-          border-top: 1px dashed rgba(214,46,31,0.6);
-        }
-        .ProseMirror div.page-break::after {
-          content: "Разрыв страницы";
-          position: absolute;
-          top: -8px;
-          right: 0;
-          padding: 0 6px;
-          font-size: 10px;
-          background: white;
-          color: rgba(214,46,31,0.85);
-        }
-      `}</style>
     </div>
   );
 };

@@ -14,8 +14,13 @@ import parse, { DOMNode, Element, Text as TextNode } from "html-react-parser";
 Font.register({
   family: "Calibri",
   fonts: [
-    { src: "/fonts/calibri.ttf", fontWeight: "normal" },
-    { src: "/fonts/calibri_bold.ttf", fontWeight: "bold" },
+    { src: "/fonts/calibri.ttf", fontWeight: "normal", fontStyle: "normal" },
+    { src: "/fonts/calibri_bold.ttf", fontWeight: "bold", fontStyle: "normal" },
+    {
+      src: "/fonts/calibri_italic.ttf",
+      fontWeight: "normal",
+      fontStyle: "italic",
+    },
   ],
 });
 
@@ -51,6 +56,9 @@ const CONTENT_TOP_OFFSET = PAGE_PADDING_TOP + LOGO_HEIGHT + LOGO_MARGIN_BOTTOM;
 
 const TABLE_WIDTH = 495;
 const TABLE_ROW_MIN_HEIGHT = 20;
+const CELL_PADDING = 8;
+const FONT_SIZE = 12;
+const LINE_HEIGHT_PX = FONT_SIZE * 1.4;
 
 const BASE_TEXT = {
   fontFamily: "Calibri" as const,
@@ -98,13 +106,16 @@ function getInlineStyles(node: Element): Style {
   return style as Style;
 }
 
-function renderInlineChildren(nodes: DOMNode[]): React.ReactNode[] {
+function renderInlineNodes(nodes: DOMNode[]): React.ReactNode[] {
   return nodes.map((node, i) => {
-    if (node.type === "text")
-      return <React.Fragment key={i}>{(node as TextNode).data}</React.Fragment>;
+    if (node.type === "text") {
+      const data = (node as TextNode).data;
+      if (data) return <React.Fragment key={i}>{data}</React.Fragment>;
+      return null;
+    }
     if (node instanceof Element) {
       const s = getInlineStyles(node);
-      const ch = renderInlineChildren(node.children as DOMNode[]);
+      const ch = renderInlineNodes(node.children as DOMNode[]);
       if (node.name === "strong" || node.name === "b")
         return (
           <Text key={i} style={[styles.bold, s]}>
@@ -141,6 +152,81 @@ function renderInlineChildren(nodes: DOMNode[]): React.ReactNode[] {
   });
 }
 
+function extractText(nodes: DOMNode[]): string {
+  let text = "";
+  for (const n of nodes) {
+    if (n.type === "text") {
+      text += (n as TextNode).data ?? "";
+    } else if (n instanceof Element) {
+      text += extractText(n.children as DOMNode[]);
+    }
+  }
+  return text;
+}
+
+function estimateTextHeight(
+  text: string,
+  availableWidth: number,
+  isVertical: boolean,
+): number {
+  if (!text.trim()) return TABLE_ROW_MIN_HEIGHT;
+  if (isVertical) return 110;
+  const charsPerLine = Math.max(
+    1,
+    Math.floor(availableWidth / (FONT_SIZE * 0.55)),
+  );
+  const words = text.trim().split(/\s+/);
+  let lines = 1;
+  let lineLen = 0;
+  for (const word of words) {
+    if (lineLen > 0 && lineLen + word.length > charsPerLine) {
+      lines++;
+      lineLen = word.length;
+    } else {
+      lineLen += (lineLen > 0 ? 1 : 0) + word.length;
+    }
+  }
+  return Math.max(TABLE_ROW_MIN_HEIGHT, lines * LINE_HEIGHT_PX + CELL_PADDING);
+}
+
+function renderCellContent(
+  cell: Element,
+  baseTextStyle: Style,
+  availWidth: number,
+  isHeader: boolean,
+): React.ReactNode {
+  const children = cell.children as DOMNode[];
+  if (!children || children.length === 0) return <Text> </Text>;
+
+  return children.map((child, idx) => {
+    if (child.type === "text") {
+      return (
+        <Text key={idx} style={[baseTextStyle, { width: availWidth }]}>
+          {(child as TextNode).data}
+        </Text>
+      );
+    }
+
+    if (child instanceof Element) {
+      const inlineContent = renderInlineNodes(child.children as DOMNode[]);
+      const s = getInlineStyles(child);
+
+      const cellParagraphStyle: Style =
+        child.name === "p" ? { marginBottom: 0 } : {};
+
+      return (
+        <Text
+          key={idx}
+          style={[baseTextStyle, s, cellParagraphStyle, { width: availWidth }]}
+        >
+          {inlineContent}
+        </Text>
+      );
+    }
+    return null;
+  });
+}
+
 function parsePx(val?: string): number | undefined {
   if (!val) return undefined;
   const n = Number.parseFloat(val);
@@ -159,206 +245,241 @@ function renderTable(tableNode: Element, index: number): React.ReactNode {
   }
   collectRows(tableNode);
 
+  const numRows = allRows.length;
+  if (numRows === 0) return null;
+
   const rowsCells = allRows.map((row) =>
     (
       (row.children as DOMNode[]).filter(
         (c) =>
           c instanceof Element && ["td", "th"].includes((c as Element).name),
       ) as Element[]
-    ).map((cell) => {
-      const colspanRaw = cell.attribs?.colspan ?? "1";
-      const rowspanRaw = cell.attribs?.rowspan ?? "1";
-      const colspan = Math.max(1, Number.parseInt(colspanRaw, 10) || 1);
-      const rowspan = Math.max(1, Number.parseInt(rowspanRaw, 10) || 1);
-      const vertical =
-        cell.attribs?.["data-vertical"] === "true" ||
-        cell.attribs?.class?.includes("vertical");
-      const colWidthHint = parsePx(cell.attribs?.["data-colwidth"]);
-      return { cell, colspan, rowspan, vertical, colWidthHint };
-    }),
+    ).map((cell) => ({
+      cell,
+      colspan: Math.max(
+        1,
+        Number.parseInt(cell.attribs?.colspan ?? "1", 10) || 1,
+      ),
+      rowspan: Math.max(
+        1,
+        Number.parseInt(cell.attribs?.rowspan ?? "1", 10) || 1,
+      ),
+      vertical: cell.attribs?.["data-vertical"] === "true",
+      colWidthHint: parsePx(cell.attribs?.["data-colwidth"]),
+      isHeader: cell.name === "th",
+    })),
   );
 
-  const colCount = Math.max(
-    1,
-    ...rowsCells.map((cells) =>
-      cells.reduce((sum, c) => sum + (c.colspan || 1), 0),
-    ),
+  type GridSlot = { ri: number; ci: number } | "spanned";
+  const grid: (GridSlot | undefined)[][] = Array.from(
+    { length: numRows },
+    () => [],
   );
-  const defaultColWidth = TABLE_WIDTH / colCount;
 
-  const columnWidths: Array<number | undefined> = new Array(colCount).fill(
+  for (let ri = 0; ri < numRows; ri++) {
+    let gc = 0;
+    for (let ci = 0; ci < rowsCells[ri].length; ci++) {
+      while (grid[ri][gc] !== undefined) gc++;
+      const item = rowsCells[ri][ci];
+      for (let dr = 0; dr < item.rowspan; dr++) {
+        for (let dc = 0; dc < item.colspan; dc++) {
+          const tr = ri + dr;
+          const tc = gc + dc;
+          if (tr < numRows) {
+            while (grid[tr].length <= tc) grid[tr].push(undefined);
+            grid[tr][tc] = dr === 0 && dc === 0 ? { ri, ci } : "spanned";
+          }
+        }
+      }
+      gc += item.colspan;
+    }
+  }
+
+  const colCount = Math.max(1, ...grid.map((r) => r.length));
+
+  const columnWidths: (number | undefined)[] = new Array(colCount).fill(
     undefined,
   );
-  const applyWidthHintsFromRow = (row: (typeof rowsCells)[number]) => {
-    let cursor = 0;
-    row.forEach((c) => {
-      const span = Math.max(1, c.colspan);
-      if (c.colWidthHint !== undefined && span === 1 && cursor < colCount) {
-        columnWidths[cursor] = c.colWidthHint;
-      }
-      cursor += span;
-    });
-  };
-  if (rowsCells[0]) applyWidthHintsFromRow(rowsCells[0]);
-  if (rowsCells[1]) applyWidthHintsFromRow(rowsCells[1]);
-
-  const specified = columnWidths.filter(
-    (w) => typeof w === "number",
-  ) as number[];
-  const specifiedTotal = specified.reduce((a, b) => a + b, 0);
-  const unspecifiedCount = columnWidths.filter((w) => w === undefined).length;
-  const remaining = Math.max(0, TABLE_WIDTH - specifiedTotal);
+  for (let ri = 0; ri <= 1 && ri < numRows; ri++) {
+    let gc = 0;
+    for (const c of rowsCells[ri]) {
+      while (gc < colCount && grid[ri][gc] === "spanned") gc++;
+      if (c.colWidthHint !== undefined && c.colspan === 1)
+        columnWidths[gc] = c.colWidthHint;
+      gc += c.colspan;
+    }
+  }
+  const specTotal = (
+    columnWidths.filter((w) => w !== undefined) as number[]
+  ).reduce((a, b) => a + b, 0);
+  const unspecCount = columnWidths.filter((w) => w === undefined).length;
   const fallback =
-    unspecifiedCount > 0 ? remaining / unspecifiedCount : defaultColWidth;
-  const colWidthAt = (i: number): number => columnWidths[i] ?? fallback;
+    unspecCount > 0
+      ? Math.max(0, TABLE_WIDTH - specTotal) / unspecCount
+      : TABLE_WIDTH / colCount;
+  const colW = (i: number) => columnWidths[i] ?? fallback;
+  const colLeft = (i: number) => {
+    let x = 0;
+    for (let k = 0; k < i; k++) x += colW(k);
+    return x;
+  };
 
-  const rowSpanLeft = new Array<number>(colCount).fill(0);
+  const rowHeights: number[] = new Array(numRows).fill(TABLE_ROW_MIN_HEIGHT);
+
+  for (let ri = 0; ri < numRows; ri++) {
+    let gc = 0;
+    for (let ci = 0; ci < rowsCells[ri].length; ci++) {
+      while (gc < colCount && grid[ri][gc] === "spanned") gc++;
+      const item = rowsCells[ri][ci];
+      if (item.rowspan === 1) {
+        let cellWidth = 0;
+        for (let k = 0; k < item.colspan; k++) cellWidth += colW(gc + k);
+        const text = extractText(item.cell.children as DOMNode[]);
+        const needed = estimateTextHeight(
+          text,
+          cellWidth - CELL_PADDING,
+          item.vertical,
+        );
+        rowHeights[ri] = Math.max(rowHeights[ri], needed);
+      }
+      gc += item.colspan;
+    }
+  }
+
+  for (let ri = 0; ri < numRows; ri++) {
+    let gc = 0;
+    for (let ci = 0; ci < rowsCells[ri].length; ci++) {
+      while (gc < colCount && grid[ri][gc] === "spanned") gc++;
+      const item = rowsCells[ri][ci];
+      if (item.rowspan > 1) {
+        let cellWidth = 0;
+        for (let k = 0; k < item.colspan; k++) cellWidth += colW(gc + k);
+        const text = extractText(item.cell.children as DOMNode[]);
+        const needed = estimateTextHeight(
+          text,
+          cellWidth - CELL_PADDING,
+          item.vertical,
+        );
+        let current = 0;
+        for (let dr = 0; dr < item.rowspan && ri + dr < numRows; dr++)
+          current += rowHeights[ri + dr];
+        if (current < needed) {
+          const extra = (needed - current) / item.rowspan;
+          for (let dr = 0; dr < item.rowspan && ri + dr < numRows; dr++)
+            rowHeights[ri + dr] += extra;
+        }
+      }
+      gc += item.colspan;
+    }
+  }
+
+  const rowTop = (ri: number) => {
+    let y = 0;
+    for (let k = 0; k < ri; k++) y += rowHeights[k];
+    return y;
+  };
+  const totalHeight = rowHeights.reduce((a, b) => a + b, 0);
+
+  const cellViews: React.ReactNode[] = [];
+
+  for (let ri = 0; ri < numRows; ri++) {
+    for (let gc = 0; gc < colCount; gc++) {
+      const slot = grid[ri][gc];
+      if (!slot || slot === "spanned") continue;
+
+      const item = rowsCells[slot.ri][slot.ci];
+      const x = colLeft(gc);
+      const y = rowTop(ri);
+
+      let w = 0;
+      for (let k = 0; k < item.colspan; k++) w += colW(gc + k);
+      let h = 0;
+      for (let dr = 0; dr < item.rowspan && ri + dr < numRows; dr++)
+        h += rowHeights[ri + dr];
+
+      const isHeader = item.isHeader;
+      const baseTextStyle: Style = isHeader
+        ? styles.tableCellTextHeader
+        : styles.tableCellText;
+
+      const availWidth = w - CELL_PADDING;
+
+      const baseCell: Style = {
+        position: "absolute",
+        left: x,
+        top: y,
+        width: w,
+        height: h,
+        borderRightWidth: 1,
+        borderRightColor: "#111111",
+        borderBottomWidth: 1,
+        borderBottomColor: "#111111",
+        padding: 4,
+        overflow: "hidden",
+      };
+
+      if (item.vertical) {
+        const textWidth = h - CELL_PADDING;
+        cellViews.push(
+          <View
+            key={`${ri}-${gc}`}
+            style={[
+              baseCell,
+              { alignItems: "center", justifyContent: "center" },
+            ]}
+          >
+            <View
+              style={{
+                transform: "rotate(-90deg)",
+                width: textWidth,
+                alignItems: "center",
+              }}
+            >
+              {renderCellContent(item.cell, baseTextStyle, textWidth, isHeader)}
+            </View>
+          </View>,
+        );
+      } else {
+        cellViews.push(
+          <View
+            key={`${ri}-${gc}`}
+            style={[
+              baseCell,
+              {
+                justifyContent: isHeader ? "center" : "flex-start",
+                alignItems: isHeader ? "center" : "flex-start",
+              },
+            ]}
+          >
+            {renderCellContent(item.cell, baseTextStyle, availWidth, isHeader)}
+          </View>,
+        );
+      }
+    }
+  }
 
   return (
-    <View key={index} style={styles.table}>
-      {rowsCells.map((cells, ri) => {
-        for (let ci = 0; ci < rowSpanLeft.length; ci++) {
-          rowSpanLeft[ci] = Math.max(0, rowSpanLeft[ci] - 1);
-        }
-
-        const rowItems: React.ReactNode[] = [];
-        let colCursor = 0;
-
-        const isHeaderRow = cells.some((c) => c.cell.name === "th");
-
-        cells.forEach((item, cellIdx) => {
-          while (colCursor < colCount && rowSpanLeft[colCursor] > 0)
-            colCursor++;
-          const startCol = colCursor;
-          const spanCols = Math.min(item.colspan, colCount - startCol);
-          const spanRows = item.rowspan;
-
-          for (let c = startCol; c < startCol + spanCols; c++) {
-            rowSpanLeft[c] = Math.max(rowSpanLeft[c], spanRows);
-          }
-
-          const boxStyle = isHeaderRow
-            ? styles.tableCellBoxHeader
-            : styles.tableCellBox;
-          const textStyle = isHeaderRow
-            ? styles.tableCellTextHeader
-            : styles.tableCellText;
-
-          const children = renderInlineChildren(
-            item.cell.children as DOMNode[],
-          );
-          const hasContent = (item.cell.children as DOMNode[]).some(
-            (c) =>
-              (c.type === "text" && (c as TextNode).data.trim()) ||
-              c instanceof Element,
-          );
-
-          let cellWidth = 0;
-          for (let k = 0; k < spanCols; k++)
-            cellWidth += colWidthAt(startCol + k);
-          const cellMinHeight = TABLE_ROW_MIN_HEIGHT * spanRows;
-          const effectiveHeight = item.vertical
-            ? Math.max(cellMinHeight, 110)
-            : cellMinHeight;
-
-          if (item.vertical) {
-            rowItems.push(
-              <View
-                key={`${ri}-${cellIdx}`}
-                style={[
-                  boxStyle,
-                  {
-                    width: cellWidth,
-                    minHeight: effectiveHeight,
-                    overflow: "hidden",
-                  },
-                ]}
-              >
-                <View
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    alignItems: "center",
-                    justifyContent: "center",
-                  }}
-                >
-                  <View
-                    style={{
-                      transform: "rotate(-90deg)",
-                      width: effectiveHeight - 10,
-                      alignItems: "center",
-                    }}
-                  >
-                    <Text
-                      style={[
-                        textStyle,
-                        { textAlign: "center", flexWrap: "wrap" },
-                      ]}
-                    >
-                      {hasContent ? children : " "}
-                    </Text>
-                  </View>
-                </View>
-              </View>,
-            );
-          } else {
-            rowItems.push(
-              <View
-                key={`${ri}-${cellIdx}`}
-                style={[
-                  boxStyle,
-                  { width: cellWidth, minHeight: cellMinHeight },
-                ]}
-              >
-                <Text style={textStyle}>{hasContent ? children : " "}</Text>
-              </View>,
-            );
-          }
-
-          colCursor = startCol + spanCols;
-        });
-
-        while (colCursor < colCount) {
-          if (rowSpanLeft[colCursor] > 0) {
-            colCursor++;
-            continue;
-          }
-          rowItems.push(
-            <View
-              key={`${ri}-empty-${colCursor}`}
-              style={[
-                isHeaderRow ? styles.tableCellBoxHeader : styles.tableCellBox,
-                {
-                  width: colWidthAt(colCursor),
-                  minHeight: TABLE_ROW_MIN_HEIGHT,
-                },
-              ]}
-            >
-              <Text
-                style={
-                  isHeaderRow
-                    ? styles.tableCellTextHeader
-                    : styles.tableCellText
-                }
-              >
-                {" "}
-              </Text>
-            </View>,
-          );
-          colCursor++;
-        }
-
-        return (
-          <View key={ri} style={styles.tableRow}>
-            {rowItems}
-          </View>
-        );
-      })}
+    <View
+      key={index}
+      style={{
+        width: TABLE_WIDTH,
+        height: totalHeight,
+        marginBottom: 8,
+        marginTop: 4,
+        position: "relative",
+        borderLeftWidth: 1,
+        borderLeftColor: "#111111",
+        borderTopWidth: 1,
+        borderTopColor: "#111111",
+      }}
+    >
+      {cellViews}
     </View>
   );
+}
+
+function renderInlineChildren(nodes: DOMNode[]): React.ReactNode[] {
+  return renderInlineNodes(nodes);
 }
 
 function renderNode(node: DOMNode, index: number): React.ReactNode {
@@ -375,11 +496,7 @@ function renderNode(node: DOMNode, index: number): React.ReactNode {
     return null;
   }
 
-  if (
-    node instanceof Element &&
-    node.name === "div" &&
-    node.attribs?.class?.includes("page-break")
-  ) {
+  if (node.name === "div" && node.attribs?.class?.includes("page-break")) {
     return <PageBreakMarker key={index} />;
   }
 
@@ -667,7 +784,7 @@ const styles = StyleSheet.create({
     fontFamily: "Calibri",
     fontSize: 9,
     color: "#888888",
-    lineHeight: 1.4,
+    lineHeight: 1.2,
   },
   footerCopyBelow: {
     position: "absolute",
@@ -691,7 +808,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "bold",
     textAlign: "center",
-    marginTop: 100,
+    marginTop: 120,
     marginBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#111111",
@@ -718,14 +835,14 @@ const styles = StyleSheet.create({
     ...BASE_TEXT,
     fontSize: 16,
     fontWeight: "bold",
-    marginBottom: 4,
-    marginTop: 6,
+    marginBottom: 2,
+    marginTop: 2,
     textAlign: "center",
   },
   h2: {
     ...BASE_TEXT,
     marginBottom: 2,
-    marginTop: 6,
+    marginTop: 2,
     textAlign: "left",
   },
   bold: { fontFamily: "Calibri", fontWeight: "bold" },
@@ -738,48 +855,11 @@ const styles = StyleSheet.create({
   dashItem: { ...BASE_TEXT, marginBottom: 2, flexDirection: "row" },
   dashBullet: { width: 16, ...BASE_TEXT },
   dashItemText: { flex: 1, ...BASE_TEXT, textAlign: "justify" },
-  table: {
-    width: TABLE_WIDTH,
-    marginBottom: 8,
-    marginTop: 4,
-    borderLeftWidth: 1,
-    borderLeftColor: "#111111",
-    borderTopWidth: 1,
-    borderTopColor: "#111111",
-  },
-  tableRow: { flexDirection: "row", minHeight: TABLE_ROW_MIN_HEIGHT },
-  tableCellBox: {
-    padding: 5,
-    borderRightWidth: 1,
-    borderRightColor: "#111111",
-    borderBottomWidth: 1,
-    borderBottomColor: "#111111",
-    minHeight: TABLE_ROW_MIN_HEIGHT,
-    justifyContent: "center",
-    overflow: "hidden",
-  },
-  tableCellBoxHeader: {
-    padding: 5,
-    borderRightWidth: 1,
-    borderRightColor: "#111111",
-    borderBottomWidth: 1,
-    borderBottomColor: "#111111",
-    minHeight: TABLE_ROW_MIN_HEIGHT,
-    justifyContent: "center",
-    overflow: "hidden",
-  },
-  tableCellText: { ...BASE_TEXT, fontSize: 11, textAlign: "left" },
+  tableCellText: { ...BASE_TEXT, fontSize: 10, textAlign: "left" },
   tableCellTextHeader: {
     ...BASE_TEXT,
-    fontWeight: "bold",
-    fontSize: 9,
+    fontSize: 10,
     textAlign: "center",
     lineHeight: 1.15,
   },
-  tableCellVerticalWrap: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  tableCellVerticalText: { ...BASE_TEXT, fontSize: 10, textAlign: "center" },
 });

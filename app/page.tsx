@@ -96,7 +96,7 @@ const INITIAL_CONTENT = `
 <div class="page-break"></div>
 
 <h1>Приложение А</h1>
-<h1>Лист согласования</h1>
+<h2>Лист согласования</h2>
 <table>
   <thead>
     <tr>
@@ -128,7 +128,7 @@ const INITIAL_CONTENT = `
 <div class="page-break"></div>
 
 <h1>Приложение Б</h1>
-<h1>Лист ознакомления</h1>
+<h2>Лист ознакомления</h2>
 <table>
   <thead>
     <tr>
@@ -158,7 +158,7 @@ const INITIAL_CONTENT = `
 <div class="page-break"></div>
 
 <h1>Приложение В</h1>
-<h1>Лист регистрации изменений</h1>
+<h2>Лист регистрации изменений</h2>
 <table>
   <thead>
     <tr>
@@ -199,7 +199,7 @@ const INITIAL_CONTENT = `
 <div class="page-break"></div>
 
 <h1>Приложение Г</h1>
-<h1>Лист учета периодических проверок</h1>
+<h2>Лист учета периодических проверок</h2>
 <table>
   <thead>
     <tr>
